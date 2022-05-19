@@ -1,0 +1,1218 @@
+---
+title: 'Disaster Relief Project: Part I'
+author: "Gretchen Larrick (jem3yb)"
+date: "`r format(Sys.Date(), '%b %d, %Y')`"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+    theme: cosmo
+    highlight: zenburn
+  pdf_document:
+    toc: yes
+always_allow_html:  true
+---
+
+<!--- Below are global settings for knitr. You can override any of them by adding the changes to individual chunks --->
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(error=TRUE,        # Keep compiling upon error
+                      collapse=FALSE,    # collapse by default
+                      echo=TRUE,         # echo code by default
+                      comment = "#>",    # change comment character
+                      fig.width = 5.5,     # set figure width
+                      fig.align = "center",# set figure position
+                      out.width = "65%", # set width of displayed images
+                      warning=FALSE,      # show R warnings
+                      message=TRUE,       # show R messages
+                      cache = TRUE)      
+```
+
+<!--- Change font sizes (or other css modifications) --->
+<style>
+h1.title {
+  font-size: 2.2em; /* Title font size */
+}
+h1 {
+  font-size: 2em;   /* Header 1 font size */
+}
+h2 {
+  font-size: 1.5em;
+}
+h3 { 
+  font-size: 1.2em;
+}
+pre {
+  font-size: 0.8em;  /* Code and R output font size */
+}
+</style>
+
+
+
+**DS 6013 | Summer 2021 | University of Virginia **
+
+*******************************************
+
+# Introduction 
+
+In 2010, a magnitude seven earthquake occurred in the country of Haiti resulting in significant casualties and displacement of residents.  As part of an effort to get aid to those displaced, a team from the Rochester Institute of Technology based in the United States generated aerial photographs of the region to identify visually those in need.  Information gathered by the team found displaced individuals used blue tarps as shelter.  This was key in allowing the photos of the region to be analyzed for blue tarps which pinpoint the location in need of aid.  A problem is that the data is digital and in large amounts.  Is there an algorithm the team can utilize to accurately produce the location where aid is needed and can this be completed as quickly as possible?
+
+This project analyzes the data provided by the RIT group using multiple classification methods. First, the data is investigated to find potential insights helpful in generating the models.  Second, the models are generated using a 10 fold cross validation.  And finally, the models are analyzed with the goal of providing a model that accurately predicts the prescense of a blue tarp and runs in sufficient time to get aid to those in need as quickly as possible.
+
+# Part I - Cross Validation
+
+# Exploratory data analysis 
+
+In this section, the data is loaded and explored to gain an understanding of the variables and their relationships. 
+
+```{r load-packages, warning=FALSE, message=FALSE}
+# Load Required Packages
+library(tidyverse)
+library(boot)
+library(MASS)
+library(pROC)
+library(caret)
+library(class)
+library(Matrix)
+library(glmnet)
+library(DT)
+library(plotly)
+
+
+
+set.seed(145)
+
+data <- read_csv('HaitiPixels.csv')
+```
+
+```{r}
+#checking for na values - none found
+sum(is.na(data))
+```
+There are no NA variables in the dataset. 
+
+```{r}
+colnames(data, do.NULL = TRUE, prefix = "col")
+```
+## Histogram
+
+The data variables in this set are Class, Red, Green, and Blue. This indicates that the Red, Green, and Blue are colors of the images and Class are the type of images that the combination of colors represent.  
+
+```{r}
+#data$Class <- as.factor(data$Class)
+ggplot(data, aes(x= Class)) + #visualization of class count
+  stat_count(width = 0.5)
+
+data %>% 
+  count(Class) #class count
+```
+In looking at the count of class variable, there is a significantly higher number of non blue tarp than blue tarp.  
+
+## 3D Scatterplot
+
+```{r}
+knitr::opts_chunk$set(out.width = "100%") # set width of displayed images
+
+
+fig <- plot_ly(x= data$Red, y= data$Blue, z= data$Green, type="scatter3d", 
+               mode="markers", color=data$Class, data = data)
+fig <- fig %>% layout(
+    title = "Red Green and Blue in 3D from the Haiti Dataset",
+    scene = list(
+      xaxis = list(title = "Red"),
+      yaxis = list(title = "Green"),
+      zaxis = list(title = "Blue")
+    ))
+
+fig
+```
+
+
+
+The 3D plot above shows all of the classes on a Red, Blue, and Green axis.  From this graph, there is a very clear separation between the Blue Tarp and the other classes.  This graph is interactive, when the graph is rotated to get multiple view points, a clear separate between the Blue Tarp and the other classes is highly visible.  This may indicate that prediction from this dataset can be produced accurately.
+
+```{r}
+data$Blue_Tarp <- ifelse(data$Class == 'Blue Tarp', 1,0) #add new binary column for regression
+data %>% 
+  count(data$Blue_Tarp) #same as previous count above so column is ready for use
+
+data$Blue_Tarp_factor = as.factor(data$Blue_Tarp) #create a column for factor
+lapply(data, class)#making sure the column changed to a factor
+```
+
+The main interest of this investigation is the classification Blue Tarp. A new binary column is created indicating a 1 for Blue Tarp and 0 for all other classification. 
+
+The data was correctly converted to the new column with an additional column created as a factor of the binary column for analysis.  
+
+## Box Plots
+
+```{r}
+boxplot(Red ~ Blue_Tarp, data = data)
+boxplot(Green ~ Blue_Tarp, data = data)
+boxplot(Blue ~ Blue_Tarp, data = data)
+```
+
+With the new classifications in place, a quick look at Tarp(1) and No Tarp(0) as they relate to the color data.  We can see that Blue has more Blue Tarp values of 1 than the other colors, which is intuitive since we are searching for the color blue.  There is no real significance in the mean with Red, but we do see a difference in the Green.  This may aid in the models predictive capabilities. 
+
+# Model Training
+
+In order to get the best model available, the predictors will be analyzed to investigation a specific subset of predictors that can generate models.  The model investigation uses the Blue_Tarp_factor variable, which has a 1 for blue tarp, and a zero for all other classifications.  
+
+```{r}
+#Forward Subset Selection
+library(leaps)
+regfit.full=regsubsets(Blue_Tarp_factor ~ Red + Blue + Green,
+                       data=data,nvmax=3, method = 'forward')
+reg.summary=summary(regfit.full)
+par(mfrow=c(2,2))  #graph of results
+plot(reg.summary$rss,xlab="Number of Variables",ylab="RSS",type="l")
+w = which.min(reg.summary$rss)
+points(w,reg.summary$rss[w], col="red",cex=2,pch=20)
+plot(reg.summary$adjr2,xlab="Number of Variables",ylab="Adjusted RSq",type="l")
+x = which.max(reg.summary$adjr2)
+points(x,reg.summary$adjr2[x], col="red",cex=2,pch=20)
+plot(reg.summary$cp,xlab="Number of Variables",ylab="Cp",type='l')
+y = which.min(reg.summary$cp)
+points(y,reg.summary$cp[y],col="red",cex=2,pch=20)
+z = which.min(reg.summary$bic)
+plot(reg.summary$bic,xlab="Number of Variables",ylab="BIC",type='l')
+points(z,reg.summary$bic[z],col="red",cex=2,pch=20)
+```
+
+Using the forward selection process, 3 is the optimal number of variables, although, one may choose to investigate the use of only two since the values for various graphs all change going from 1 -> 2.  The red dot indicates the optimal point for each of the measures.  For RSS or the residual sum of squares, the value needs to be lower indicating the variance in the residuals is low.  Adjusted R squared is to be higher.  This means the data is closest to the fitted regression line.  For Mallow's Cp, the value should be lower as it is comparing the precision and bias of the full model with a subset of the predictors.  A lower value means less unexplained error. And finally BIC would need to be lower, in measuring the probability of the model being true the lower value is more likely to be true. 
+
+```{r}
+#Backward Subset Selection
+library(leaps)
+regfit.full=regsubsets(Blue_Tarp ~ Red + Blue + Green,
+                       data=data,nvmax=3, method = 'forward')
+reg.summary_back=summary(regfit.full)
+par(mfrow=c(2,2))  #graph of results
+plot(reg.summary_back$rss,xlab="Number of Variables",ylab="RSS",type="l")
+w = which.min(reg.summary_back$rss)
+points(w,reg.summary_back$rss[w], col="red",cex=2,pch=20)
+plot(reg.summary_back$adjr2,xlab="Number of Variables",ylab="Adjusted RSq",type="l")
+x = which.max(reg.summary_back$adjr2)
+points(x,reg.summary_back$adjr2[x], col="red",cex=2,pch=20)
+plot(reg.summary_back$cp,xlab="Number of Variables",ylab="Cp",type='l')
+y = which.min(reg.summary_back$cp)
+points(y,reg.summary_back$cp[y],col="red",cex=2,pch=20)
+z = which.min(reg.summary_back$bic)
+plot(reg.summary_back$bic,xlab="Number of Variables",ylab="BIC",type='l')
+points(z,reg.summary_back$bic[z],col="red",cex=2,pch=20)
+```
+
+These are the same results found with forward selection, so for this project, we will use all three predictors in the model investigation. 
+
+## Logistic Regression
+
+The first model assessed is logistic regression. All the models that are to be assessed are formatted the same way.
+
+```{r}
+#Variables c
+log.response <- log.predictor <- c() #variables to hold model response and predictor to generate ROC curves
+accuracy_log <- c() #variables to hold confusion matrix values.
+precision_log <- c()
+TPR_log <- c()
+FPR_log <- c()
+```
+
+```{r}
+#Run the loop 10 times for K = 10
+lr_time <- proc.time()
+for (i in 1:10) { 
+  index <- sample(nrow(data), nrow(data)*.75)   
+  train <- data[index, ]
+  test <- data[-index, ]
+  
+  #Train and Test the data
+  suppressWarnings(glm.fit <- glm(Blue_Tarp_factor ~ Red + Blue + Green, 
+                                  data = train, family = "binomial"))
+  glm.resp=predict(glm.fit,newdata = test,type='response') #response is estimated probability
+  glm.pred=as.factor(ifelse(glm.resp>0.5,'1','0'))
+  
+  #confusion matrix
+  cm_log = confusionMatrix(glm.pred,test$Blue_Tarp_factor)
+  accuracy_log[i] = cm_log$overall['Accuracy']
+  precision_log[i] = cm_log$byClass['Pos Pred Value']
+  TPR_log[i] = cm_log$byClass['Sensitivity']
+  FPR_log[i] = 1 - cm_log$byClass['Specificity']
+  
+    #for ROC
+  log.response <- c(log.response, test$Blue_Tarp_factor)
+  log.predictor <- c(log.predictor, glm.resp)
+}
+log_time <- (proc.time() - lr_time)
+
+```
+
+For each fold, the model is generated using the entire dataset. It is tested using the a 75/25 split of the data which creates 75% training data and 25% testing data. 
+
+A confusion matrix is generated and the values stored in a variable for later insertion into the results table.  This is calculated using the predicted class, not the probability of class.  This allows for a direct comparison to the test data.
+
+Finally, the predictor values (probabilities) and response values are stored for later ROC generation. This is how it is set up for each of the models in the study.
+
+The glm.resp variable in this logistic regression is the probability of being a Blue Tarp and the glm.pred is the probability convereted to class prediciton where if the probabiltiy is greater than 50%, it is given a value of 1 (or blue tarp) and if less than 50%, it is given a value of 0 (or no blue tarp).  
+
+Additionally, the time it takes to complete the entire 10-fold cross validation was stored for later examination. 
+
+## LDA
+
+```{r}
+#Variables
+LDA.response <- LDA.predictor <- c()
+accuracy_LDA <- c() #variables to hold confusion matrix values.
+precision_LDA <- c()
+TPR_LDA <- c()
+FPR_LDA <- c()
+```
+
+```{r}
+#Run the loop 10 times for K = 10
+lr_time <- proc.time()
+for (i in 1:10) { 
+  #create test and train data sets, used 75%, 25% split
+  index <- sample(nrow(data), nrow(data)*.75)   
+  train <- data[index, ]
+  test <- data[-index, ]
+  
+  #Train and Test the data
+  lda.model <- lda(Blue_Tarp_factor ~ Red + Blue + Green, data = train)
+  lda.pred=predict(lda.model,test)
+  lda.class=lda.pred$class
+
+  # #confusion matrix table used to populate variables
+  cm_LDA = confusionMatrix(lda.class,test$Blue_Tarp_factor)
+  accuracy_LDA[i] = cm_LDA$overall['Accuracy']
+  precision_LDA[i] = cm_LDA$byClass['Pos Pred Value']
+  TPR_LDA[i] = cm_LDA$byClass['Sensitivity']
+  FPR_LDA[i] = 1 - cm_LDA$byClass['Specificity']
+
+  #for ROC
+  LDA.response <- c(LDA.response, test$Blue_Tarp_factor)
+  LDA.predictor <- c(LDA.predictor, lda.pred$posterior[,2])
+}
+lda_time <- (proc.time() - lr_time)
+```
+
+The LDA is set up similarly to logistic regression in terms of train/test data.  
+
+The variable lda.class shows the class predicted and lda.pred shows the probability for each class.   
+
+The confusion matrix uses the class prediction for calculations. 
+
+For the lda.pred variable, it has an attribute showing the probability of 1 for the Blue Tarp class.  It is saved to the LDA.predictor.
+
+## QDA
+
+```{r}
+#Variables
+QDA.response <- QDA.predictor <- c()
+accuracy_QDA <- c() #variables to hold confusion matrix values.
+precision_QDA <- c()
+TPR_QDA <- c()
+FPR_QDA <- c()
+```
+
+```{r}
+#Run the loop 10 times for K = 10
+lr_time <- proc.time()
+for (i in 1:10) { 
+  #create test and train data sets, used 75%, 25% split
+  index <- sample(nrow(data), round(nrow(data)*.75, 0))   
+  train <- data[index, ]
+  test <- data[-index, ]
+  
+  #Train and Test the data
+  qda.model <- qda(Blue_Tarp_factor ~ Red + Blue + Green, data = train)
+  qda.pred=predict(qda.model,test, type='response')
+  qda.class=qda.pred$class
+
+  #confusion matrix table used to populate variables
+  cm_QDA = confusionMatrix(qda.class,test$Blue_Tarp_factor)
+  accuracy_QDA[i] = cm_QDA$overall['Accuracy']
+  precision_QDA[i] = cm_QDA$byClass['Pos Pred Value']
+  TPR_QDA[i] = cm_QDA$byClass['Sensitivity']
+  FPR_QDA[i] = 1 - cm_QDA$byClass['Specificity']
+
+  #for ROC
+  QDA.response <- c(QDA.response, test$Blue_Tarp_factor)
+  QDA.predictor <- c(QDA.predictor, qda.pred$posterior[,2])
+}
+qda_time <- (proc.time() - lr_time)
+```
+
+Same set up as LDA.
+
+## KNN
+
+```{r}
+#Variables for 10 fold cross validation
+KNN.response <- KNN.predictor <- c()
+accuracy_KNN <- c() #variables to hold confusion matrix values.
+precision_KNN <- c()
+TPR_KNN <- c()
+FPR_KNN <- c()
+```
+
+```{r}
+#Run the loop 10 times for K = 10
+lr_time <- proc.time()
+for (i in 1:10) { 
+  #create test and train data sets, used 75%, 25% split
+  index <- sample(nrow(data), round(nrow(data)*.75, 0))   
+  train <- data[index, ]
+  test <- data[-index, ]
+  
+  train.X = data.frame(train[,c('Blue_Tarp_factor', 'Red', 'Blue', 'Green')])
+  test.X = data.frame(test[,c('Blue_Tarp_factor', 'Red', 'Blue', 'Green')])
+  
+  #Train and Test the data
+  KNN.model =knn(train.X,test.X,train.X$Blue_Tarp_factor ,k=3, prob = TRUE)
+  
+  #confusion matrix table used to populate variables
+  cm_KNN = confusionMatrix(KNN.model,test.X$Blue_Tarp_factor)
+  accuracy_KNN[i] = cm_KNN$overall['Accuracy']
+  precision_KNN[i] = cm_KNN$byClass['Pos Pred Value']
+  TPR_KNN[i] = cm_KNN$byClass['Sensitivity']
+  FPR_KNN[i] = 1 - cm_KNN$byClass['Specificity']
+  
+  #use the KNN model probabilties for ROC
+  KNN.prob <- attr(KNN.model, 'prob')
+  KNN.prob <- ifelse(KNN.model == "0", 1-KNN.prob, KNN.prob)
+  
+  #for ROC
+  KNN.response <- c(KNN.response, test.X$Blue_Tarp_factor)
+  KNN.predictor <- c(KNN.predictor, KNN.prob)
+}
+knn_time <- (proc.time() - lr_time)
+
+```
+
+K nearest neighbors works slightly different than the previous models.  The knn model uses both the train and test data to make the predictions, unlike the previous models that the user needs to do the step of testing the model on the test data.  The data that is generated from the models is a prediction and then tested against the testing matrix response.  
+
+K = 3 in this model as a result of the tuning parameter evaluation below where it is described in more detail. 
+
+To generate the response values for ROC, the probabilities are needed.  The knn model is generated with the probabilities as an attribute.  This attribute is then converted to the probability that the model 0.  If 0 then 1 - probability and if 1, it is the probability.
+
+### Tuning Parameter $k$
+
+```{r}
+#using caret library to work through k values to find the best accuracy.  
+#Tried values for k as high as 50, but found no significant change in accuracy.  
+#Lowered due to processing time.
+set.seed(145)
+lr_time <- proc.time()
+trControl <- trainControl(method  = "cv", number  = 10)
+  
+k.search <- train(Blue_Tarp_factor ~ Red + Blue + Green, 
+                  method = "knn",
+                  data = data,
+                  tuneGrid   = expand.grid(k = 1:15),
+                  trControl  = trControl, metric = "Accuracy" 
+                  )
+knn_time <- (proc.time() - lr_time)
+plot(k.search)
+```
+
+In looking at the k values as graphed above, the accuracy has a large jump from 2 to 3, then continuously decreases as the number of nearest neighbors increase.  If we look at the scale of accuracy, we see that we are looking at very high accuracy range with the lowest point evaluated being 0.9966 and the highest being over 0.9972, these are still very accurate values. Originally evaluated k's of up to 50, but this was computationally exhaustive and produced no real change in accuracy, so the max of the range of k values explored was reduced to 20
+
+k = 3 is used meaning that the three closest neighbors of a specific data point will determine classification. 
+
+## Penalized Logistic Regression (Ridge Regression)
+
+```{r}
+#Variables for 10 fold cross validation
+ridge.response <- ridge.predictor <- c()
+grid <- 10^seq(10, -2, length = 100)  # a grid of lambda values 
+best_lambdas <- c()
+accuracy_ridge <- c() #variables to hold confusion matrix values.
+precision_ridge <- c()
+TPR_ridge <- c()
+FPR_ridge <- c()
+```
+
+```{r}
+#Run the loop 10 times for K = 10
+lr_time <- proc.time()
+for (i in 1:10) { 
+  #create test and train data sets, used 75%, 25% split
+  index <- sample(nrow(data), round(nrow(data)*.75, 0))   
+  train <- data[index, ]
+  test <- data[-index, ]
+  
+  X.train <- model.matrix(Blue_Tarp_factor ~ Red + Blue + Green, data=train)
+  Y.train <- train$Blue_Tarp_factor
+  X.test <- model.matrix(Blue_Tarp_factor ~ Red + Blue + Green, data=test)
+  Y.test <- test$Blue_Tarp_factor
+  
+  #Train and Test the data
+  cv.out=cv.glmnet(X.train, Y.train,alpha=0,family='binomial', lambda = grid) 
+  
+  #using CV to find best lambda value
+  ridge_mod<-glmnet(X.train, Y.train, family="binomial", alpha=0,lambda=grid, 
+                    keep= TRUE, standardize = FALSE)
+  ridge_pred=predict(ridge_mod, s=cv.out$lambda.min, newx=X.test, type="response")
+  ridge.pred=ifelse(ridge_pred>0.5,1,0)
+
+  #confusion matrix table used to populate variables
+  cm_ridge = confusionMatrix(as.factor(ridge.pred),Y.test)
+  accuracy_ridge[i] = cm_ridge$overall['Accuracy']
+  precision_ridge[i] = cm_ridge$byClass['Pos Pred Value']
+  TPR_ridge[i] = cm_ridge$byClass['Sensitivity']
+  FPR_ridge[i] = 1 - cm_ridge$byClass['Specificity']
+
+  best_lambdas[i] <- cv.out$lambda.min
+
+  #for ROC
+  ridge.response <- c(ridge.response, test$Blue_Tarp_factor)
+  ridge.predictor <- c(ridge.predictor, ridge_pred[,1])
+}
+ridge_time <- (proc.time() - lr_time)
+
+
+```
+
+Ridge regression is set up similarly to the KNN model with data first being set up as a matrix.  
+
+Ridge regression uses lambda, or the penalty value.  If lambda is zero then it performs the same as as our logistic regression in the beginning.  Here, we generate a lambda through the use of cross validation for each fold then use it as the lambda value in the prediction.
+
+As with previous models, we are looking for the probability that the value of our prediction is 1, and that is what is saved as the predictor variable. 
+
+```{r}
+best_lambdas #List of all generated best lambdas for the cross validation
+```
+This list of the best lambdas was generated through the ridge regression cross validation.  Each fold had the same lambda value, 0.01. 
+
+## Random Forest - Part II
+
+This section looks at the model generated using Random Forests. 
+
+```{r}
+#Variables for 10 fold cross validation
+forest.response <- c()
+forest.predictor <- c()
+accuracy_forest <- c() #variables to hold confusion matrix values.
+precision_forest <- c()
+TPR_forest <- c()
+FPR_forest <- c()
+```
+
+As with the previous models, the set up follows their similar structure.  The data is split into testing and training and a model is created using the training data.  The probability when using the predict function allows for ROC generation and the actual predicted values allows for the confusion matrix generation.  These confusion matrix values and probability values are saved into a list for later use. 
+
+```{r message=FALSE, warning=FALSE}
+library(randomForest)
+rf_time <- proc.time()
+for (i in 1:10) { 
+  #create test and train data sets, used 75%, 25% split
+  index <- sample(nrow(data), round(nrow(data)*.75, 0))   
+  train <- data[index, ]
+  test <- data[-index, ]
+
+  #Train and Test the data
+  rf_mod  = randomForest(Blue_Tarp_factor ~ Red + Blue + Green,data=train, 
+                         mtry = 2, importance=TRUE, ntree = 1000)
+  rf_prob = predict(rf_mod,newdata=test, type = 'prob')
+  rf_pred = predict(rf_mod,newdata=test)
+  
+  #confusion matrix table used to populate variables
+  cm_forest = confusionMatrix(as.factor(rf_pred),test$Blue_Tarp_factor)
+  accuracy_forest[i] = cm_forest$overall['Accuracy']
+  precision_forest[i] = cm_forest$byClass['Pos Pred Value']
+  TPR_forest[i] = cm_forest$byClass['Sensitivity']
+  FPR_forest[i] = 1 - cm_forest$byClass['Specificity']
+  
+  #for ROC
+  forest.response <- c(forest.response,test$Blue_Tarp_factor)
+  
+  forest.predictor <- c(forest.predictor, rf_prob[,2]) 
+}
+rf_time <- (proc.time() - rf_time)
+```
+
+### Tuning Parameters
+
+One of the parameters in Random Forest is mtry, or the number of variables randomly sampled at each split of the tree.  For this model, there are only three predictors meaning the value of mtry can be either 2 or 3.  When looking to find the best value, the code is looking at the random forest model and both of the mtry possibilities.  
+
+```{r}
+#illustrate mtry value used.
+control <- trainControl(method="cv", number=10, search="grid")
+rf_random <- train(Blue_Tarp_factor ~ Red + Blue + Green, data=train, method="rf", tuneLength=2, trControl=control)
+print(rf_random)
+```
+
+Based on the accuracy values from the table above that either of these values would be an appropriate choice as they both accuracy over 0.996.  For this project, the choice has been made to use mtry of 2. 
+
+The next parameter for random forest is the number of trees.  As shows in the graph below, when the model is 1000 we see that the green bar out of bag error levels off at around 75 number of trees.  No further increase of the tree is needed and could be reduced.   
+
+```{r}
+#illustrate ntree value
+plot(rf_mod)
+```
+
+## Support Vector Model - Part II
+
+The final model generated is the support vector model.  There are three types of SVMs that will be looked at in the model genrations, linear, polynomial, and radial. Each model is set up the same as the previous models in terms of training/test data generation, probability predictions, and prediction values. For each of the SVM types, an error variable has been created to compare the models.  The version with the lowest test error will be used to create the confusion matrix and generate the prediction values. 
+
+### Variable Set up
+
+```{r}
+#Variables for 10 fold cross validation
+svm.response <- svm.predictor <- c()
+accuracy_svm <- c() #variables to hold confusion matrix values.
+precision_svm <- c()
+TPR_svm <- c()
+FPR_svm <- c()
+test_error_l <- c()
+test_error_r <- c()
+test_error_p <- c()
+```
+
+### Linear
+
+```{r}
+library(e1071)
+for (i in 1:10) { 
+  #create test and train data sets, used 75%, 25% split
+  index <- sample(nrow(data), round(nrow(data)*.75, 0))   
+  train <- data[index, ]
+  test <- data[-index, ]
+
+  #Train and Test the data
+  tune.svm_mod_l=tune(svm,Blue_Tarp_factor ~ Red + Blue + Green, data=train, kernel="linear",
+                      ranges=list(cost=10^seq(-1,3, by= 1))) #Tune the best value of cost
+  svm_pred = predict(tune.svm_mod_l$best.model,newdata=test) #prediction with best model
+  
+  #error
+  test_error_l[i] = mean(test$Blue_Tarp_factor != svm_pred)
+}
+```
+
+The linear model above has only one tuning parameter, cost.  Cost is the argument that allows the specification of the cost of a violation to the margin.  The range explored is 0.1 to 1000.
+
+### Polynomial
+
+Polynomial SVM has an additional tuning parameter to cost, degree.  This is the degree of polynomial the model is to be fit.  For this model, the values explored are 2, 3, and 4.  
+
+```{r}
+tune.svm_mod_p=tune(svm,Blue_Tarp_factor ~ Red + Blue + Green, data=train, 
+                    kernel="polynomial",ranges=list(degree=c(2,3,4),cost = c(10,100,1000)))
+
+summary(tune.svm_mod_p)
+```
+
+Because this is an extremely time consuming process, the tuning of the parameters was done separate to the model training.  The tuning resulted in a degree of 3 and a cost of 1000 for the parameters and applied to the model below. 
+
+```{r}
+for (i in 1:10) { 
+  #create test and train data sets, used 75%, 25% split
+  index <- sample(nrow(data), round(nrow(data)*.75, 0))   
+  train <- data[index, ]
+  test <- data[-index, ]
+
+  #Train and Test the data
+  svm_mod_p=svm(Blue_Tarp_factor ~ Red + Blue + Green, data=train, 
+                kernel="polynomial",cost = 1000, degree = 3) 
+  svm_pred = predict(svm_mod_p,newdata=test) #Actual predictions and not probability
+  
+  #error
+  test_error_p[i] = mean(test$Blue_Tarp_factor != svm_pred)
+}
+```
+
+### Radial
+
+As with polynomial, radial has two parameters for tuning, cost and gamma. Gamma determins the amount of curvature in the decision boundary with higher gamma meaning more curvature. 
+
+```{r}
+tune.svm_mod_r=tune(svm,Blue_Tarp_factor ~ Red + Blue + Green, 
+                    data=train, kernel="radial",ranges=list(cost=c(10,100,1000),gamma=c(4,5,6,7)))
+summary(tune.svm_mod_r)
+```
+
+In an effort to save time, the tuning was done separate from the model generation.  The optimal values for cost is 100 and gamma is 7.  These values are applied to the model below. 
+
+```{r}
+svm_time <- proc.time()
+for (i in 1:10) { 
+  #create test and train data sets, used 75%, 25% split
+  index <- sample(nrow(data), round(nrow(data)*.75, 0))   
+  train <- data[index, ]
+  test <- data[-index, ]
+
+  #Train and Test the data
+  svm_mod_r= svm(Blue_Tarp_factor ~ Red + Blue + Green, data=train, 
+                 kernel="radial",cost = 1000, gamma = 4, probability = TRUE) #Tune the best value of cost 
+  svm_pred = predict(svm_mod_r,newdata=test) #Actual predictions and not probability - uses best model found by tuning
+  svm_prob = predict(svm_mod_r,newdata=test, probability = TRUE ) #probability 
+  #error
+  test_error_r[i] = mean(test$Blue_Tarp_factor != svm_pred)
+  
+  #confusion matrix table used to populate variables
+  cm_svm_r = confusionMatrix(as.factor(svm_pred),test$Blue_Tarp_factor)
+  accuracy_svm[i] = cm_svm_r$overall['Accuracy']
+  precision_svm[i] = cm_svm_r$byClass['Pos Pred Value']
+  TPR_svm[i] = cm_svm_r$byClass['Sensitivity']
+  FPR_svm[i] = 1 - cm_svm_r$byClass['Specificity']
+
+  #for ROC
+  svm.response <- c(svm.response, test$Blue_Tarp_factor)
+  svm.predictor <- c(svm.predictor, attr(svm_prob, "probabilities")[,2])
+}
+svm_time <- (proc.time() - svm_time)
+```
+
+Once the test errors for each of the SVMs were evaluated, the radial model produced the lowest error (see below).  The above model was set up simliar to the other models in terms of data separation, predictions, and confusion matrix generation. 
+
+#### Test Error Comparison
+
+```{r}
+dat <- list(test_error_l, test_error_p, test_error_r)
+dat_mean <- sapply(dat, mean)
+paste0("Average Linear Test Error : ", round(dat_mean[1],4))
+paste0("Average Polynomial Test Error : ", round(dat_mean[2],4))
+paste0("Average Radial Test Error : ", round(dat_mean[3],4))
+```
+
+# Training Results (Cross-Validation)
+
+## ROC Curves
+
+```{r}
+rocs <- list()
+par(pty = 's')
+rocs[["Logistic"]] <- roc(log.response, log.predictor, plot = TRUE, 
+                          legacy.axes = TRUE, levels = c(1,2), direction = '<', print.auc=TRUE)
+legend("bottomright", legend=c("logistic Regression"), lwd=4)
+rocs[["LDA"]] <- roc(LDA.response, LDA.predictor, plot = TRUE, 
+                     legacy.axes = TRUE, levels = c(1,2), direction = '<', print.auc=TRUE)
+legend("bottomright", legend=c("LDA"), lwd=4)
+rocs[["QDA"]] <- roc(QDA.response, QDA.predictor, plot = TRUE, 
+                     legacy.axes = TRUE, levels = c(1,2), direction = '<', print.auc=TRUE)
+legend("bottomright", legend=c("QDA"), lwd=4)
+rocs[["KNN"]] <- roc(KNN.response, KNN.predictor, plot = TRUE, 
+                     legacy.axes = TRUE, levels = c(1,2), direction = '<', print.auc=TRUE)
+legend("bottomright", legend=c("KNN"), lwd=4)
+rocs[["Ridge"]] <- roc(ridge.response, ridge.predictor, plot = TRUE, 
+                       legacy.axes = TRUE, levels = c(1,2), direction = '<', print.auc=TRUE)
+legend("bottomright", legend=c("Ridge"), lwd=4)
+rocs[["SVM"]] <- roc(svm.response, svm.predictor, plot = TRUE, 
+                     legacy.axes = TRUE, levels = c(1,2), direction = '<', print.auc=TRUE)
+legend("bottomright", legend=c("SVM"), lwd=4)
+rocs[["Random Forest"]] <- roc(forest.response, forest.predictor, plot = TRUE, 
+                               legacy.axes = TRUE, levels = c(1,2), direction = '<', print.auc=TRUE)
+legend("bottomright", legend=c("Random Forest"), lwd=4)
+```
+
+The ROC graphs above are graphed using sensitivity and 1 - specificity.  These are calculated using the pROC library using the predictor and response data generated for each of the models.  All of these models perform extremely well.  Each of the models are close to the upper left corner of the graph, indicating they have strong predictive capabilities.   The only real differentiation visible is from the LDA and SVM models.  The values of the AUC are still high so to differentiate these models further, additional values created from the confusion matrix are needed.  These are found in the Training Results table of the report. 
+
+## Threshold Selection
+
+```{r}
+## Coordinates of the curve using pROC to get threshold and other confusion matrix values
+log_data <- coords(rocs[["Logistic"]], "best", best.method= "closest.topleft",
+                   ret=c("threshold"), levels = c(1,2), direction = '<')
+
+LDA_data <- coords(rocs[["LDA"]], 'best', best.method= "closest.topleft", 
+                   ret=c("threshold"), levels = c(1,2), direction = '<')
+
+QDA_data <- coords(rocs[["QDA"]], "best", best.method= "closest.topleft",
+                   ret=c("threshold"), levels = c(1,2), direction = '<')
+
+KNN_data <- coords(rocs[["KNN"]], "best", best.method= "closest.topleft",
+                   ret=c("threshold"), levels = c(1,2), direction = '<')
+
+Ridge_data <- coords(rocs[["Ridge"]], "best", best.method= "closest.topleft",
+                     ret=c("threshold"), levels = c(1,2), direction = '<')
+
+Forest_data <- coords(rocs[["Random Forest"]], "best", best.method= "closest.topleft",
+                      ret=c("threshold"), levels = c(1,2), direction = '<')
+
+SVM_data <- coords(rocs[["SVM"]], "best", best.method= "closest.topleft",
+                   ret=c("threshold"), levels = c(1,2), direction = '<')
+
+```
+
+Thresholds are the values in the ROC curve that give a value for the upper most top left corner.  This is the point at which the ratio of sensitivity/(1-specificity) is optimal and the higher probability of predicting correctly. 
+
+## Results Table
+
+```{r}
+#define data
+Model <- c('Logistic', 'LDA', 'QDA', 'KNN', 'Ridge', 'RandomForest', 'SVM')
+Tuning <- c('NA', 'NA', 'NA', 'k = 3', 'lambda = 0.01',
+            'mtry = 2 and ntree = 500', 'cost = 1000 & gamma =4')
+AUROC <- c(rocs[["Logistic"]]$auc, rocs[["LDA"]]$auc, rocs[["QDA"]]$auc,
+           rocs[["KNN"]]$auc, rocs[["Ridge"]]$auc, rocs[["Random Forest"]]$auc,
+           rocs[["SVM"]]$auc)
+Threshold <- c(log_data$threshold, LDA_data$threshold, QDA_data$threshold,
+               KNN_data$threshold, Ridge_data$threshold, Forest_data$threshold,
+               SVM_data$threshold)
+Accuracy <- c(sapply(list(accuracy_log), mean), sapply(list(accuracy_LDA), mean),
+              sapply(list(accuracy_QDA), mean), sapply(list(accuracy_KNN), mean),
+              sapply(list(accuracy_ridge), mean), sapply(list(accuracy_forest), mean),
+              sapply(list(accuracy_svm), mean))
+TPR <- c(sapply(list(TPR_log), mean), sapply(list(TPR_LDA), mean),
+              sapply(list(TPR_QDA), mean), sapply(list(TPR_KNN), mean),
+              sapply(list(TPR_ridge), mean), sapply(list(TPR_forest), mean),
+              sapply(list(TPR_svm), mean))
+FPR <- c(sapply(list(FPR_log), mean), sapply(list(FPR_LDA), mean),
+              sapply(list(FPR_QDA), mean), sapply(list(FPR_KNN), mean),
+              sapply(list(FPR_ridge), mean), sapply(list(FPR_forest), mean),
+              sapply(list(FPR_svm), mean))
+Precision<- c(sapply(list(precision_log), mean), sapply(list(precision_LDA), mean),
+              sapply(list(precision_QDA), mean), sapply(list(precision_KNN), mean),
+              sapply(list(precision_ridge), mean), sapply(list(precision_forest), mean),
+              sapply(list(precision_svm), mean))
+Timing <- c(log_time['elapsed'], lda_time['elapsed'], qda_time['elapsed'],
+            knn_time['elapsed'], ridge_time['elapsed'], rf_time['elapsed'],
+            svm_time['elapsed'])
+
+#create dataframe
+cv.data <- data.frame(Model, Tuning,AUROC, Threshold, Accuracy, 
+                      TPR, FPR, Precision, Timing)
+
+#clean up decimal places
+is.num <- sapply(cv.data, is.numeric)
+cv.data[is.num] <- lapply(cv.data[is.num], round, 5)
+
+#Generate table
+datatable(cv.data)
+
+```
+
+Above is a table that contains all of the data generated for each of the models.  The values are calculated as follows:
+
+* Tuning - Each tuning parameter was generated through a cross validation function specific to each model. 
+* AUROC - Calculated using the pROC library which generates the area under the curve value for each ROC curve.
+* Threshold - Calculated using the pROC library that generates the best value closest to the top left corner for each of the ROC curves generated.
+* Accuracy - Uses the formula (True Positive + True Negative)/ All Observations - This was calculated using values generated for each fold and averaged.  
+* TPR - Uses the formula (True Positive)/ (True Positive + False Negative) - This was calculated using values generated for each fold and averaged.
+* FPR - Uses the formula (False Positive) / (False Positive + True Negative) - This was calculated using values generated for each fold and averaged.
+* Precision - Uses the formula (True Positive)/ (True Positive + False Positive) - This was calculated using values generated for each fold and averaged.
+* Timing - This is the time it takes for the for loop to complete the cross validation.  The value is in seconds.  
+
+
+# Part II - Hold Out Data
+
+# Data Loading
+
+The files contained in part two are were supplied in multiple files all in the .txt format.  The files had descriptive titles, if there was a NON_BLUE_TARP or NOT_BLUE_TARP, this indicated the observations were not of the Blue Tarp class as in Part I.  If the file had a title with BLUE_TARP, and had the negative portion of the label omitted, then is indicated a positive observation for a blue tarp.  The files are loaded in below and a quick snapshot of the file is provided.  When the data is loaded for evaluation, a column is created where a 1 is for the positive blue tarp and 0 is for the negative blue tarp. 
+
+The data in the files that were provided did not have a specific label as to which of the values were red, blue or green.  To get a feel for the data, the website https://www.rapidtables.com/web/color/RGB_Color.html was used to enter the numbers indicate the columns.  The values for the columns of the blue tarp positive files were entered in the website as red = B1, green = B2, and blue = B3.  This was a correct assumption and the columns were renamed to the proper color as they were loaded for evaluation. 
+
+One of the files provided was an incomplete duplicate of another file and not included in this project. 
+
+```{r}
+data_files <- list.files('C:/Users/gdlar/Google Drive/DS6013/Disaster Project/data_files', 
+                         full.names = TRUE)
+hold_out_data <- c()
+
+for(file in data_files){
+  if (grepl("NO", file)){
+    file_holder <- read.delim(file, skip = 8, sep = '', header = FALSE)[ ,8:10]
+    colnames(file_holder) <- c('Red', 'Green', 'Blue')
+    file_1 <- cbind(Blue_Tarp = 0, file_holder)
+    hold_out_data <- rbind(hold_out_data, file_1)
+  }
+  else {
+    file_holder <- read.delim(file, skip = 8, sep = '', header = FALSE)[ ,8:10]
+    colnames(file_holder) <- c('Red', 'Green', 'Blue')
+    file_2 <- cbind(Blue_Tarp = 1, file_holder)
+    hold_out_data <- rbind(hold_out_data, file_2)
+    }
+}
+head(hold_out_data)
+```
+
+```{r}
+hold_out_data$Blue_Tarp <- as.factor(hold_out_data$Blue_Tarp)
+lapply(hold_out_data, class)#making sure the column changed to a factor
+```
+
+Once the data is loaded, it is then converted to a factor for analysis as shown above. 
+
+# Exploratory Data Analysis
+
+The data is will now be explored to see if there are any insights that can be gained.  First, a 3D scatter plot is created to look at the Blue Tarp data vs. the No Blue Tarp data. 
+
+## 3D Scatter Plot
+
+```{r}
+library(scatterplot3d)
+colors <- c("#E69F00","#56B4E9")
+colors <- colors[as.numeric(hold_out_data$Blue_Tarp)]
+s3d <- scatterplot3d(x = hold_out_data$Red, y = hold_out_data$Green,
+                     z = hold_out_data$Blue, color = colors, main="Blue Tarp and No Blue Tarp in terms of RGB")
+       legend('bottom', legend = c('No Blue Tarp', 'Blue Tarp'),col =  c( "#E69F00","#56B4E9"), 
+              pch = 16, inset = -0.35, xpd = TRUE, horiz = TRUE)
+```
+
+
+In the graph above, there is a very distinct linear separation between the Blue Tarp (blue) and the No Blue Tarp (yellow) values.  This was also seen in the previous dataset when the values were plotted in terms of class.  An attempt was made to use the same package as in Part I, but it did not work well with larger data sets so a new package was used. 
+
+## Pairs Plots
+
+Pairs plots looks at the pairwise relationship between predictors.  In this case, it will be looking at the colors red, green, and blue in terms of Blue Tarp (1) and No Blue Tarp (0)
+
+```{r message=FALSE, warning=FALSE}
+library(GGally)
+ggpairs(data = hold_out_data, title = "Hold Out Data", mapping=ggplot2::aes(color = Blue_Tarp))
+```
+
+**Red**
+*The values for Red are similar for the Blue Tarp and No Blue Tarp values, as shown in the density plot for Red/Red.  This is what is also shown within the training data of Part I.   
+*The median values as shown in the box plot, however, were both similar in the training and testing data sets.
+*Red is highly correlated with Green and Blue.  This would be expected as it is the specific combination fo the three values that create a specific color. 
+
+**Green**
+*The box plots show a familiar pattern as in the training data, with the only difference being the width fo the box or the range of values. 
+*Looking at the denisty plot for green, the Blue Tarp and No Blue Tarp have vales that over lap, not as significant in red, but there is overlap.  When the value is positive, the green values tend to be a lower value than when there is not a blue tarp. 
+*Green is highly correlated with Blue and Red.  
+
+**Blue**
+*The box plots for Blue indicate a clear separation in values when there is a Blue Tarp verusus when there is not a Blue Tarp. 
+*The density plot also shows a clear separation between the values when there is a Blue Tarp versus No Blue Tarp. 
+*Blue is highly correlated with both colors Red and Green. 
+
+
+```{r}
+hold_out_data %>% 
+  count(Blue_Tarp)
+```
+
+The pairs plot was hard to interpret when looking at the number of Blue Tarp and No Blue Tarp values.  The plot above allows for a closer look at the number of Blue Tarp vs. No Blue Tarp.  There is a significant number more of the negative value than the positive value. 
+
+# Model Investigation with Hold-Out Data
+
+This section of the project is applying all models to the hold out data set.  Each model generates probabilities, prediction values and a confusion matrix. 
+
+## Linear Regression
+
+```{r}
+lr_time_ho <- proc.time() #Time Assessment
+
+#Probabilities
+glm.resp_ho=predict(glm.fit,newdata = hold_out_data,type='response') 
+
+#Predictions based on Threshold from Model Training 
+glm.pred_ho=as.factor(ifelse(glm.resp_ho>log_data$threshold,1,0)) 
+
+#Confusion matrix
+cm_log_ho = confusionMatrix(glm.pred_ho,hold_out_data$Blue_Tarp)
+
+#convert Blue_Tarp column to numeric for ROC curves
+log_response <- as.numeric(hold_out_data$Blue_Tarp) 
+  
+log_time_ho <- (proc.time() - lr_time_ho) #Time Assessment
+```
+
+## LDA
+
+```{r}
+lr_time <- proc.time()
+
+#Probabilities
+lda.prob_ho=predict(lda.model,hold_out_data, type = 'response')
+
+#Predictions based on Threshold from Model Training 
+lda.class_ho = rep(0, length(hold_out_data$Blue_Tarp))
+lda.class_ho[lda.prob_ho$posterior[,2] > LDA_data$threshold] = 1 
+
+#Confusion Matrix
+cm_LDA_ho = confusionMatrix(as.factor(lda.class_ho),hold_out_data$Blue_Tarp)
+
+lda_time_ho <- (proc.time() - lr_time)
+```
+
+## QDA
+
+```{r}
+qr_time <- proc.time()
+
+#Probabilities
+qda.prob_ho=predict(qda.model,newdata = hold_out_data, type='response')
+
+#Predictions based on Threshold from Model Training 
+qda.class_ho = rep(0, length(hold_out_data$Blue_Tarp))
+qda.class_ho[qda.prob_ho$posterior[,2] > QDA_data$threshold] = 1 
+
+#Confusion Matrix
+cm_QDA_ho = confusionMatrix(as.factor(qda.class_ho),hold_out_data$Blue_Tarp)
+
+qda_time_ho <- (proc.time() - qr_time)
+```
+
+## KNN
+
+```{r}
+kr_time <- proc.time()
+#Probabilities
+KNN.prob_ho = predict(k.search,newdata = hold_out_data, type = 'prob')
+
+#Predictions based on Threshold from Model Training
+KNN_pred_ho=ifelse(KNN.prob_ho[,2]>KNN_data$threshold,1,0)
+
+#Confusion Matrix
+cm_KNN_ho = confusionMatrix(as.factor(KNN_pred_ho),hold_out_data$Blue_Tarp)
+
+knn_time_ho <- (proc.time() - kr_time)
+```
+
+## Penalized Logistic Regression (Ridge)
+
+```{r}
+rr_time <- proc.time()
+#Data SetUp
+X.test_ho <- model.matrix(Blue_Tarp ~ Red + Blue + Green, data=hold_out_data)
+Y.test_ho <- hold_out_data$Blue_Tarp
+
+#Probabilities
+ridge_prob_ho=predict(ridge_mod, s=cv.out$lambda.min, newx=X.test_ho, type="response")
+
+#Predictions based on Threshold from Model Training
+ridge_pred_ho=ifelse(ridge_prob_ho > Ridge_data$threshold,1,0)
+
+#Confusion Matrix
+cm_ridge_ho = confusionMatrix(as.factor(ridge_pred_ho),Y.test_ho)
+
+ridge_time_ho <- (proc.time() - rr_time)
+```
+
+## Suppor Vector Model
+
+```{r}
+sr_time <- proc.time()
+#Probabilities
+svm_prob_ho = predict(svm_mod_r,newdata=hold_out_data, probability = TRUE )
+
+#Predictions based on Threshold from Model Training
+svm_pred_ho <- (ifelse(attr(svm_prob_ho, "probabilities")[,2]>SVM_data$threshold,1,0))
+
+#Confusion Matrix
+cm_svm_r_ho = confusionMatrix(as.factor(svm_pred_ho),hold_out_data$Blue_Tarp)
+
+svm_time_ho <- (proc.time() - sr_time)
+```
+
+## Random Forest
+
+```{r}
+rf_time <- proc.time()
+#Probabilities
+rf_prob_ho = predict(rf_mod,newdata=hold_out_data, type = 'prob')
+
+#Confusion Matrix
+rf_pred_ho <-(ifelse(rf_prob_ho[,2]>Forest_data$threshold,1,0))
+
+#confusion matrix table used to populate variables
+cm_forest_ho = confusionMatrix(as.factor(rf_pred_ho),hold_out_data$Blue_Tarp)
+
+rf_time_ho <- (proc.time() - rf_time)
+```
+
+## ROC Curves
+
+The ROC curves are setup the same as the training data in Part I.
+
+```{r}
+par(pty = 's')
+Logistic_ROC <- roc(log_response, glm.resp_ho, 
+                             plot = TRUE, levels = c(1,2), direction = '<', 
+                             legacy.axes = TRUE, print.auc=TRUE)
+                legend("bottomright", legend=c("logistic Regression"), lwd=4)
+
+LDA_ROC <- roc(log_response,lda.prob_ho$posterior[,2], 
+                        plot = TRUE, legacy.axes = TRUE, levels = c(1,2), 
+                        direction = '<', print.auc=TRUE)
+           legend("bottomright", legend=c("LDA"), lwd=4)
+
+QDA_ROC <- roc(log_response, qda.prob_ho$posterior[,2], 
+                        plot = TRUE, legacy.axes = TRUE, levels = c(1,2), 
+                        direction = '<', print.auc=TRUE)
+legend("bottomright", legend=c("QDA"), lwd=4)
+
+KNN_ROC <- roc(log_response, KNN.prob_ho[,2], plot = TRUE, 
+                        legacy.axes = TRUE, levels = c(1,2), direction = '<', 
+                        print.auc=TRUE)
+legend("bottomright", legend=c("KNN"), lwd=4)
+
+Ridge_ROC <- roc(log_response, ridge_prob_ho[,1], 
+                          plot = TRUE, legacy.axes = TRUE, levels = c(1,2), 
+                          direction = '<', print.auc=TRUE)
+legend("bottomright", legend=c("Ridge"), lwd=4)
+
+SVM_ROC <- roc(log_response, attr(svm_prob_ho, "probabilities")[,2], 
+                        plot = TRUE, legacy.axes = TRUE, levels = c(1,2), 
+                        direction = '<', print.auc=TRUE)
+legend("bottomright", legend=c("SVM"), lwd=4)
+
+Random_Forest_ROC <- roc(log_response, rf_prob_ho[,2], 
+                                  plot = TRUE, legacy.axes = TRUE, 
+                                  levels = c(1,2), direction = '<', 
+                                  print.auc=TRUE) 
+legend("bottomright", legend=c("Random Forest"), lwd=4)
+```
+
+There are some interesting shapes of the curves versus what was seen in the cross validation data.  SVM has a dip near the upper left hand corner and KNN seems less round.  The values used in the KNN ROC are the probabilties so it is interesting to see the slope of the upper portion of the ROC shift down left to right. 
+
+# Results Table (Hold Out Data)
+
+The result table is set up the same as the training data in Part I. 
+
+```{r}
+#define data
+Model <- c('Logistic', 'LDA', 'QDA', 'KNN', 'Ridge', 'RandomForest', 'SVM')
+Tuning <- c('NA', 'NA', 'NA', 'k = 3', 'lambda = 0.01',
+            'mtry = 2 and ntree = 1000', 'cost = 100 & gamma =7')
+AUROC_HO <- c(Logistic_ROC$auc, LDA_ROC$auc, QDA_ROC$auc,
+           KNN_ROC$auc, Ridge_ROC$auc, Random_Forest_ROC$auc,
+           SVM_ROC$auc)
+Threshold <- c(log_data$threshold, LDA_data$threshold, QDA_data$threshold,
+               KNN_data$threshold, Ridge_data$threshold, Forest_data$threshold,
+               SVM_data$threshold)
+Accuracy_HO <- c(cm_log_ho$overall['Accuracy'], cm_LDA_ho$overall['Accuracy'],
+                 cm_QDA_ho$overall['Accuracy'], cm_KNN_ho$overall['Accuracy'],
+              cm_ridge_ho$overall['Accuracy'], cm_forest_ho$overall['Accuracy'], 
+              cm_svm_r_ho$overall['Accuracy'])
+TPR_HO <- c(cm_log_ho$byClass['Sensitivity'], cm_LDA_ho$byClass['Sensitivity'],
+            cm_QDA_ho$byClass['Sensitivity'], cm_KNN_ho$byClass['Sensitivity'],
+              cm_ridge_ho$byClass['Sensitivity'], cm_forest_ho$byClass['Sensitivity'],
+            cm_svm_r_ho$byClass['Sensitivity'])
+FPR_HO <- c((1-cm_log_ho$byClass['Specificity']), (1-cm_LDA_ho$byClass['Specificity']),
+            (1-cm_QDA_ho$byClass['Specificity']),(1-cm_KNN_ho$byClass['Specificity']),
+              (1-cm_ridge_ho$byClass['Specificity']), (1-cm_forest_ho$byClass['Specificity']), 
+            (1-cm_svm_r_ho$byClass['Specificity']))
+Precision_HO <- c(cm_log_ho$byClass['Pos Pred Value'], cm_LDA_ho$byClass['Pos Pred Value'],
+                  cm_QDA_ho$byClass['Pos Pred Value'], cm_KNN_ho$byClass['Pos Pred Value'],
+              cm_ridge_ho$byClass['Pos Pred Value'], cm_forest_ho$byClass['Pos Pred Value'], 
+              cm_svm_r_ho$byClass['Pos Pred Value'])
+Timing_HO <- c(log_time_ho['elapsed'], lda_time_ho['elapsed'], qda_time_ho['elapsed'],
+            knn_time_ho['elapsed'], ridge_time_ho['elapsed'], rf_time_ho['elapsed'],
+            svm_time_ho['elapsed'])
+
+#create dataframe
+cv_ho.data <- data.frame(Model, Tuning,AUROC_HO, Threshold, Accuracy_HO,
+                      TPR_HO, FPR_HO, Precision_HO, Timing_HO)
+
+#clean up decimal places
+is.num <- sapply(cv_ho.data, is.numeric)
+cv_ho.data[is.num] <- lapply(cv_ho.data[is.num], round, 4)
+
+#Generate table
+hold_out_table <- datatable(cv_ho.data, caption = htmltools::tags$caption( style = 'caption-side: 
+                                                         top; text-align: center; 
+                                                         color:black; font-size:200% ;',
+                                                         'Hold Out Data Results'))
+hold_out_table
+```
+
+
+#Conclusions
+
+## Prediction Metrics  
+
+In determining the model's performance, the metrics calculated in the Results Table are vital.  Each data set provided high AUROC values for all models. This means that all models studied in this project have an exceptional ability to distinguish between Blue Tarp and No Blue Tarp.  Accuracy for all models is high as well, especially with the cross validation set.The hold out data set is where we see some of the accuracy, or how often the model is correct, drop, but not a significant amount.  The largest drop is for logistic regression it goes from 0.995 to 0.887. 
+
+True positive rate is also used, again, in cross validation high values are found for all models, but when the hold out data is analyzed, differences between the models are seen.  The biggest drop for TPR is logistic regression at 0999 to 0.886.
+
+False positive rate was a primary metric used to differentiate the models.  In the cross validation, when looking to compare the top two models (logistic and LDA) this value was the primary source to choose logistic with the cross validation data set.  
+
+Precision was not a factor in this analysis.  All models had high precision in both the cross validation and the hold out data sets. 
+
+## Timing 
+
+Timing is a major factor in evaluating the models and their analysis.  Many of the models are computationally exhaustive and the good way to understand is by measuring how long each model takes to generate and analyze data.  This gains insight to a model's impact on a system and how that could impact a time sensitive project's success rate. When looking at the cross validation data set, the model with the longest computation time is random forest at 3580 seconds.  This is by far the highest value and much longer than the second slowest model, KNN at about 163 seconds.  The fastest models to train are LDA at less than a second and QDA as just over 1 second. 
+
+Interesting enough, these same timing values did hold not when applying the models to the hold out data set.  Most of the increase in timing of the models deals with the tuning of the parameters.  With forest there are two parameters to choose from, one being the number of trees chosen to be 1000.  When applying the model to the hold out data, the model with the highest time is KNN at nearly 360 seconds.  This dwarfs the other remaining models with the next slowest time being random forest at 29 seconds.  The fastest models are logistic regression and ridge regression at ~3 seconds each.  In terms of timing, any of the models would be able to perform quickly on a new data set, with the exception of KNN.
+
+## Model Comparison 
+
+For this project, when looking at the hold out data and the cross validation data, all models performed exceptionally well.  
+
+The first portion of the project was to evaluated multiple types of models and asses performance based on a specific set of data.  All models performed extremely well in terms of AUROC, Accuracy, TPR and Precision.  The point at which there was a bit of differentiation is FPR  and timing of the models.  Some of the models took an exceptionally long time to run, the three highest times in seconds belonging to Random Forest (3580s), Ridge (89s), and SVM (52s).  When it came to false positivity rate, the best performing model is KNN with a 0.03 value and the worst is LDA with 0.20.  
+
+All models have high accuracy and high precision based on the cross validation data.  If one model is chosen to be the best performing on the cross validation data, it would be logistic regression.  Even though logistic regression has a higher FPR of 0.12, the other metrics are 0.99 and it has a time of 2.81 seconds.  Also, it is a more simplistic approach.  The higher the complexity of the system, the easier it could be to introduce error.  This model is easy to understand, easy to run computationally, and easy to load onto a new set of data. 
+
+Each of the models generated with in the cross validation portion of the project was applied to a new set of data, the hold out data.  Each model was generated using the threshold calculated by the ROC curves in the cross validation portion of this project.  In order to find some differentiation between the models, analysis of the various metrics is required.  
+
+As in the cross validation section, the models all performed extremely well.  All models have AUROC at levels greater than 0.93. Precision is also high for each of the models, all at least 0.99.  We see more differentiation in the outcomes than with the cross validation set when looking at teh accuracy, TPR, and FPR.  Most of the models performed high in accuracy with numbers over 0.95 with the exception of logistic regression and ridge regression.  This was also the case in terms of TPR, logistic regression (0.89) and ridge regression (0.890 were lower than all the other models 0.95.  The model with the best performance in FPR is LDA (.01)
+
+Overall the models performed exceptionally well.  The key factors in differentiating the models were timing, FPR, and accuracy. 
+
+## Final Models Comparison
+
+When looking at the scatter plots of both sets of data, a linear separation of the data is clearly visible.  In the cross validation, there is linear separation between the Blue Tarp class and the other classes, and in the hold out data set a clear linear separation is seen between the Blue Tarp and No Blue Tarp data.  This was the first clue to a linear model being effective. Looking at the cross validation results, the linear models of logistic regression and LDA perform well.  The metric that showed logistic regression having better performance than than LDA is FPR.  The FPR is 0.20 compared to the 0.12 of the logistic regression model for cross validation. For the cross validation section, the linear regression model performed better.  This was not the case when the models were applied to the hold out data. 
+
+As the models are applied to the hold out data a threshold value is applied.  This value changed the probability value that predicts a positive or negative outcome for an observation.  For the cross validation, the default value was used of 0.5, but when the ROCS were generated threshold was generated and used in each model during it's run on the dataset.  In the case of LDA, the threshold was changed to 0.0009 so that when probability was over this value it results in a positive value.  As a result, the FPR for LDA went from 0.20 to 0.01 and it now becomes a contender for the best model to use.  Other models have high values in the AUROC, Accuracy, TPR, FPR and Precision, but a number of the other models have an extrememly long run time (random forest, svm).  With all of those factors taken into consideration, the final model that performed the best is the LDA model. 
+
+In the hold out data set, the logistic regression model under performed when the threshold is applied.  The accuracy decreases to 0.88.  While still an extremely good score, relative to all the other models being evaluated, it was the lowest.  It also underperformed in TPR.  It was less able to produce a true postive than when it was applied to the cross validation set of data. 
+
+The LDA and logistic regression models look to be a pretty repeatable and viable.  The data is in a linear form and are correlated to one another.  The basis of the data is RGB colors. When these variables each color has a combination of values.  We a user specifies the range for a required color it to understand and investigate.  
+
+
+## Overall Model Recommendation 
+
+After all data has been modeled and analyzed, the best model to use would be LDA.  LDA has high performance in all categories.  It also is not a long and complex computational model.  To generate the results, the model takes 7.4 seconds on over 2 million observations.  This indicates it can work fast and be easily and accurately applied to additional data files as they are gathered in the field. This results differ than the cross validation results.  The final results for the cross validation indicated that logistic may be the best model but when thresholds are applied to the new set of data, the LDA model out performs logistic regression.  
+
+In practice, using one model might not be best practice in model application.  Training a model on a data set can lead to assumptions that do not translate to other data sets and need investigation.  Real world data can have new observations that could shift a model.  In this project, if the logistic regression model had been the only model applied to the data set, the highest performing model would not have been chosen.  The logistic model would have performed great on it's own, but seeing it in comparison to the other models, it does not have the high performace expected. Broadening the search for the best outcome means including more than one model. 
+
+## Real World Implications
+
+The model choice of this project has massive real world applications.  The day before this report was finalized, Haiti encountered another large earthquake on the scale of the earthquake studied in this report.  With the previous data collection and model analysis, these models could have real world impliations.  Because it deals with human life and is an extremely time sensitive issue, accuracy and timing are of highest priority.  Data that is collected in the field should be easily communicated to data scientsts to quickly apply models.  
+
+The shift im accuracy of the logistic regresssion from the training of the model to the application of the model suggests to run both the LDA and logistic regression models.  They are both linear models which correlates to the separation visible in scatter plots.  To balance out any overfitting or other unforseen issues in the data, this would be a good approach to ensure to try and find as many blue tarps as possible to save lives.  If both models are run, timing is not an issue as it is a total of ~10 seconds as oppsoed to an LDA run only of ~7 seconds.  If new data comes in and the model isn't fitting as it should, training the model is not a large time commitent as LDA takes less than a second and linear regression is 3 seconds.  Linear regression can slow down with large sets of data, but in this scenario at over 2 million observations, the slow down was not enough to remove it from consideration.  In a real world situation, LDA and logistic regression should be run in unison.  
+
+
+# Appendix & Reference
+
+### Understanding the caret library:
+
+http://zevross.com/blog/2017/09/19/predictive-modeling-and-machine-learning-in-r-with-the-caret-package/ (To get help with knn and finding k)
+
+### Other programming and modeling aid:
+
+https://collab.its.virginia.edu/access/lessonbuilder/item/1865652/group/1708215b-438b-42af-8b93-a7c21672e16e/Gedeck/module-4.html
+https://collab.its.virginia.edu/access/lessonbuilder/item/1830953/group/1708215b-438b-42af-8b93-a7c21672e16e/Module%203:%20Class_,%20LDA,%20and%20QDA/Module%203%20Live%20Session/M-03_soln.html-1
+
+### ROC Curves:
+
+https://cran.r-project.org/web/packages/pROC/pROC.pdf
+https://www.youtube.com/watch?v=qcvAqAH60Yw&t=19s
+https://stackoverflow.com/questions/20346568/feature-selection-cross-validation-but-how-to-make-roc-curves-in-r
+
+### K fold programming help
+
+https://gist.github.com/duttashi/a51c71acb7388c535e30b57854598e77
+
+### Random Forest
+
+https://machinelearningmastery.com/tune-machine-learning-algorithms-in-r/
+
+### Threshold
+
+https://web.stanford.edu/class/stats202/notes/Classification/Evaluating-classifiers.html
+
+### SVM
+
+https://medium.com/@myselfaman12345/c-and-gamma-in-svm-e6cee48626be
+
+### Conclusions from Part I - For reference purposes
+
+#### Conclusion \#1 
+
+The goal of this project is to predict a model capable of predicting a blue tarp from an image given it's RGB data.  Each of the models explored were able to do this with incredible accuracy.  If any of these models were to be picked, this goal would be met. With the criteria that one of these models must be chosen, using the simplest solution tends to generate the least amount of future issues.  In this case, the chosen model is Logistic Regression.  This model is easily understood, easily explained and is computationally easy on a computer system.  Though not the absolute best in all categories, it performs well in all categories in the results table. 
+
+A factor in each of the model's ability to predict lies in the data.  When looking at the 3D scatter plot, the blue tarp values are visibly separate from the non blue tarp values in the red/blue/green axis structure.  This sets up a model that can produce accurate results.
+
+#### Conclusion \#2
+
+How can the choice of the logistic regression model help save a human life?  The goal is to data from high resolution aerial images with a blue tarp indictors of individuals in distress. The model chosen has a 99.5% accuracy value and a computation speed of ~2 - 4 seconds (run time can vary on all datasets) on a data set with over 63,000 observations.  This result allows for the data to be used accurately, and quickly on large amounts. The photographic data once run through the model, quickly shows where the need is and this allows the aid workers to move fast. The faster and more accurately an aid worker can get to a person in need, the more lives can be helped, and inevitably saved.  Correct predictions and fast restuls allow time being spent helping instead of searching or waiting.  If the data is predicted correctly, but takes a long time to get to the aid workers, time may have run out to help someone in a correctly predicted blue tarp area.  Both accuracy and quick computation speed are vital to helping save human lives in for the country of Haiti in this scenario. 
+
+#### Conclusion \#3
+
+The next steps for this model would be to scale up.  How does it work on larger amounts of data?  Does it still have the high accuracy/precision/predictability in the results table?  Does the speed slow down, and if so, by how much?  For this scenerio, the logistic regression model was chosen, but when moving on to a scale up process, the other models would need to be included in this as some may perform better on larger data sets, and logistic regression may slow down.  The answers to these questions would also have an impact on saving lives.  If the data that is able to be processed is greater quantities, with same high accuracy, precision, and computational speed, this allows aid workers to reach more people and save more lives of those stranded in blue tarps due to a catastrophic earthquake. 
+ 
+
+
